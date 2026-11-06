@@ -8,6 +8,9 @@ A native Mac launcher for keeping multiple Claude Desktop accounts organized. Yo
 
 POLR Switch is an independent project. It is not affiliated with or endorsed by Anthropic. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
 
+<p align="center"><img src="assets/screenshot.png" width="800" alt="POLR Switch showing Main running alongside Profile 2 and Profile 3"></p>
+<p align="center"><sub>Example profile names shown for privacy.</sub></p>
+
 ## What it does
 
 - Open or focus your usual Claude account without creating a new Main profile.
