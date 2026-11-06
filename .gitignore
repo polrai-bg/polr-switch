@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+dist/
+work/
+*.app/
+*.dSYM/
+.env
+.env.*
+profiles.json
+*.log
