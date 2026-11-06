@@ -1,3 +1,5 @@
+<a href="https://www.producthunt.com/products/polr-switch?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-polr-switch-claude-switcher" target="_blank" rel="noopener noreferrer"><img alt="POLR Switch - Claude Switcher - Multiple Claudes. One Desktop. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1307132&amp;theme=light&amp;t=1794004785377"></a>
+
 <p align="center"><img src="assets/AppIcon.png" width="180" alt="POLR Switch: three luminous doorways on a midnight blue tile"></p>
 <h1 align="center">POLR Switch</h1>
 <p align="center">A little room for every account.</p>
