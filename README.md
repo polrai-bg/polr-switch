@@ -6,7 +6,7 @@ A native Mac launcher for keeping multiple Claude Desktop accounts organized. Yo
 
 **Preview · Apple Silicon · macOS 15+ · SwiftUI · No third-party dependencies**
 
-POLR Switch is an independent project. It is not affiliated with or endorsed by Anthropic or MultiClaude. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
+POLR Switch is an independent project. It is not affiliated with or endorsed by Anthropic. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
 
 ## What it does
 
@@ -133,7 +133,7 @@ Issues and small, focused pull requests are welcome. Never include profile stora
 
 POLR Switch has its own name, native interface, and original doorway icon. The icon was generated for this project using OpenAI image generation; its [design brief](assets/DESIGN.md) is included. The runtime launcher icons use simple colored initials.
 
-Research references for the underlying macOS/Electron approach include [Electron's app API](https://www.electronjs.org/docs/latest/api/app), [claude-multi.sh](https://github.com/IbrahimHosseini/multi-claude-app/blob/main/claude-multi.sh), and the [claude-multiprofile changelog](https://github.com/jmdarre-v/claude-multiprofile/blob/main/CHANGELOG.md). This implementation was written for this project; those applications and their branding are not bundled.
+The launcher uses native macOS APIs and Electron's profile data-directory support. See [Electron's app API](https://www.electronjs.org/docs/latest/api/app) for background on application data paths.
 
 ## License
 
