@@ -4,18 +4,19 @@ import AppKit
 struct IntegrationTests {
     @MainActor
     static func main() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("loftlane-integration-\(UUID().uuidString)", isDirectory: true)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("polr-switch-integration-\(UUID().uuidString)", isDirectory: true)
         print("Disposable integration root: \(root.path)")
         let store = ProfileStore(root: root)
         try store.seed()
-        let aID = try store.save(name: "Integration A \(UUID().uuidString.prefix(6))", color: "Blue")
-        let bID = try store.save(name: "Integration B \(UUID().uuidString.prefix(6))", color: "Orange")
+        let aID = try store.save(name: "Integration A \(UUID().uuidString.prefix(6))", color: .blue)
+        let bID = try store.save(name: "Integration B \(UUID().uuidString.prefix(6))", color: .orange)
         let profiles = try [store.profile(aID), store.profile(bID)]
+        let mainSpec = LaunchSpec(app: ClaudeLauncher.app, data: nil)
         let originals = NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop")
             .filter { app in
                 guard let arguments = try? ProcessArguments.read(app.processIdentifier) else { return false }
-                return !arguments.contains(where: { $0.hasPrefix("--user-data-dir=") })
+                return mainSpec.matches(arguments)
             }.map(\.processIdentifier)
         let a = try await ClaudeLauncher.open(profiles[0].id, store: store)
         let b = try await ClaudeLauncher.open(profiles[1].id, store: store)
@@ -47,8 +48,9 @@ struct IntegrationTests {
         if let main = try store.load().first(where: \.isMain), originals.count == 1 {
             let mainPID = try await ClaudeLauncher.open(main.id, store: store)
             precondition(mainPID == originals[0])
+            print("PASS: Main reuses original Claude")
         }
-        print("PASS: two independent Claude processes, correct profile arguments, repeat launch reuses same PID, quit/relaunch preserves profile, Main reuses original Claude")
+        print("PASS: two independent Claude processes, correct profile arguments, repeat launch reuses same PID, quit/relaunch preserves profile")
         print("Not tested: login identity, Cowork execution, browser integration, update restart")
     }
 }

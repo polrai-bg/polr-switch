@@ -4,7 +4,7 @@ import Darwin
 struct Profile: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
-    var color: String
+    var color: ProfileColor
     var archived = false
     var usesDefaultProfile: Bool? = nil
     var isMain: Bool { usesDefaultProfile == true }
@@ -22,7 +22,32 @@ enum ProfileError: LocalizedError {
     }
 }
 
-let profileColors = ["Blue", "Orange", "Green", "Purple"]
+enum ProfileColor: String, Codable, CaseIterable {
+    case blue = "Blue", orange = "Orange", green = "Green", purple = "Purple"
+}
+
+final class FileLease {
+    private var descriptor: Int32
+
+    init(at url: URL) throws {
+        descriptor = Darwin.open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW, mode_t(0o600))
+        guard descriptor >= 0 else { throw ProfileError.message("Cannot open the profile operation lock.") }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(descriptor)
+            descriptor = -1
+            throw ProfileError.message("Another profile operation is in progress. Try again shortly.")
+        }
+    }
+
+    func release() {
+        guard descriptor >= 0 else { return }
+        flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
+        descriptor = -1
+    }
+
+    deinit { release() }
+}
 
 func checkedName(_ name: String) throws -> String {
     let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,15 +82,14 @@ final class ProfileStore {
 
     private func locked<T>(_ action: () throws -> T) throws -> T {
         try privateDirectory(root)
-        let fd = Darwin.open(root.appendingPathComponent("registry.lock").path,
-                             O_CREAT | O_RDWR | O_NOFOLLOW, mode_t(0o600))
-        guard fd >= 0 else { throw ProfileError.message("Cannot open the profile registry lock.") }
-        defer { Darwin.close(fd) }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            throw ProfileError.message("Another profile operation is in progress. Try again shortly.")
-        }
-        defer { flock(fd, LOCK_UN) }
+        let lease = try FileLease(at: root.appendingPathComponent("registry.lock"))
+        defer { lease.release() }
         return try action()
+    }
+
+    func operationLease(_ id: UUID) throws -> FileLease {
+        try privateDirectory(root)
+        return try FileLease(at: root.appendingPathComponent("operation-\(id.uuidString).lock"))
     }
 
     private func read() throws -> Registry {
@@ -87,7 +111,7 @@ final class ProfileStore {
             throw ProfileError.message("The profile registry has an unsupported version or duplicate IDs.")
         }
         for p in registry.profiles {
-            guard try checkedName(p.name) == p.name, profileColors.contains(p.color) else {
+            guard try checkedName(p.name) == p.name else {
                 throw ProfileError.message("A stored profile has invalid details. The registry has been left untouched.")
             }
         }
@@ -107,15 +131,15 @@ final class ProfileStore {
         try locked {
             var registry = try read()
             if registry.profiles.isEmpty && !fm.fileExists(atPath: registryURL.path) {
-                registry.profiles = [Profile(id: UUID(), name: "Personal", color: "Blue", usesDefaultProfile: true),
-                                     Profile(id: UUID(), name: "Work", color: "Orange")]
+                registry.profiles = [Profile(id: UUID(), name: "Personal", color: .blue, usesDefaultProfile: true),
+                                     Profile(id: UUID(), name: "Work", color: .orange)]
             } else if !registry.profiles.contains(where: \.isMain) {
                 if let i = registry.profiles.firstIndex(where: {
                     !$0.archived && ["personal", "main"].contains($0.name.lowercased())
                 }) {
                     registry.profiles[i].usesDefaultProfile = true
                 } else {
-                    registry.profiles.insert(Profile(id: UUID(), name: "Main", color: "Blue", usesDefaultProfile: true), at: 0)
+                    registry.profiles.insert(Profile(id: UUID(), name: "Main", color: .blue, usesDefaultProfile: true), at: 0)
                 }
             } else { return }
             registry.version = 2
@@ -124,9 +148,8 @@ final class ProfileStore {
     }
 
     @discardableResult
-    func save(id: UUID? = nil, name: String, color: String) throws -> UUID {
+    func save(id: UUID? = nil, name: String, color: ProfileColor) throws -> UUID {
         let name = try checkedName(name)
-        guard profileColors.contains(color) else { throw ProfileError.message("Choose a profile color.") }
         return try locked {
             var registry = try read()
             guard !registry.profiles.contains(where: {
@@ -168,7 +191,7 @@ final class ProfileStore {
 
     func profile(_ id: UUID) throws -> Profile {
         guard let p = try load().first(where: { $0.id == id && !$0.archived }) else {
-            throw ProfileError.message("This profile is archived or missing. Open Loftlane to manage it.")
+            throw ProfileError.message("This profile is archived or missing. Open the profile manager to manage it.")
         }
         return p
     }
@@ -193,8 +216,12 @@ struct LaunchSpec {
     var executable: URL { app.appendingPathComponent("Contents/MacOS/Claude") }
     var arguments: [String] { data.map { ["--user-data-dir=\($0.path)"] } ?? [] }
 
+    func ownsExecutable(_ path: String) -> Bool {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path == executable.resolvingSymlinksInPath().path
+    }
+
     func matches(_ arguments: [String]) -> Bool {
-        guard arguments.first == executable.path else { return false }
+        guard let first = arguments.first, ownsExecutable(first) else { return false }
         let flags = arguments.dropFirst().filter { $0.hasPrefix("--user-data-dir=") || $0 == "--user-data-dir" }
         guard !arguments.contains(where: { $0.hasPrefix("--type=") }) else { return false }
         return data == nil ? flags.isEmpty : flags.count == 1 && flags.first == self.arguments.first

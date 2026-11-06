@@ -10,6 +10,7 @@ final class ProfilesModel: ObservableObject {
     @Published var selected: UUID?
     @Published var running: Set<UUID> = []
     @Published var opening: Set<UUID> = []
+    @Published var exporting: Set<UUID> = []
     @Published var error: String?
     @Published var statusError: String?
     @Published var available = false
@@ -46,8 +47,12 @@ final class ProfilesModel: ObservableObject {
         } catch { statusError = error.localizedDescription }
     }
 
+    func canOpen(_ profile: Profile) -> Bool {
+        available && statusError == nil && !profile.archived && !opening.contains(profile.id)
+    }
+
     func open(_ profile: Profile) {
-        guard !opening.contains(profile.id) else { return }
+        guard canOpen(profile) else { return }
         opening.insert(profile.id)
         Task {
             defer { opening.remove(profile.id); refresh() }
@@ -56,7 +61,7 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
-    func save(_ profile: Profile?, name: String, color: String) -> Bool {
+    func save(_ profile: Profile?, name: String, color: ProfileColor) -> Bool {
         do {
             selected = try store.save(id: profile?.id, name: name, color: color)
             try reload()
@@ -66,11 +71,7 @@ final class ProfilesModel: ObservableObject {
 
     func archive(_ profile: Profile) {
         do {
-            refresh()
-            guard statusError == nil, !running.contains(profile.id) else {
-                throw ProfileError.message("Quit this profile's Claude window before archiving it. Its data and saved login will be kept.")
-            }
-            try store.setArchived(profile.id, !profile.archived)
+            try ClaudeLauncher.setArchived(profile.id, !profile.archived, store: store)
             try reload()
         } catch { self.error = error.localizedDescription }
     }
@@ -84,16 +85,23 @@ final class ProfilesModel: ObservableObject {
     }
 
     func export(_ profile: Profile) {
+        guard !exporting.contains(profile.id) else { return }
         let panel = NSSavePanel()
         panel.title = "Save profile launcher"
         panel.prompt = "Create launcher"
-        panel.nameFieldStringValue = "Loftlane \(profile.name.replacingOccurrences(of: "/", with: "-" )).app"
+        panel.nameFieldStringValue = "\(AppMetadata.displayName) \(profile.name.replacingOccurrences(of: "/", with: "-" )).app"
         panel.allowedContentTypes = [.applicationBundle]
         panel.canCreateDirectories = true
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try LauncherBundle.export(profile, to: url); NSWorkspace.shared.activateFileViewerSelecting([url]) }
-        catch { self.error = error.localizedDescription }
+        exporting.insert(profile.id)
+        Task {
+            defer { exporting.remove(profile.id) }
+            do {
+                try await LauncherBundle.export(profile, to: url)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 
@@ -121,13 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct LoftlaneApp: App {
+struct POLRSwitchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var model = ProfilesModel.shared
     private let isLauncher = Bundle.main.object(forInfoDictionaryKey: "ProfileID") != nil
 
     var body: some Scene {
-        Window("Loftlane", id: "profiles") {
+        Window(AppMetadata.displayName, id: "profiles") {
             if !isLauncher { ProfilesView(model: model) }
         }
         .defaultSize(width: 800, height: 570)
@@ -135,14 +143,14 @@ struct LoftlaneApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
         }
-        MenuBarExtra("Loftlane", systemImage: "square.stack.3d.up", isInserted: .constant(!isLauncher)) {
+        MenuBarExtra(AppMetadata.displayName, systemImage: "square.stack.3d.up", isInserted: .constant(!isLauncher)) {
             ForEach(model.profiles.filter { !$0.archived }) { profile in
                 Button("\(model.running.contains(profile.id) ? "Focus" : "Open") \(profile.name)") { model.open(profile) }
-                    .disabled(model.opening.contains(profile.id) || !model.available)
+                    .disabled(!model.canOpen(profile))
             }
             Divider()
             ShowManagerButton()
-            Button("Quit Loftlane") { NSApp.terminate(nil) }
+            Button("Quit \(AppMetadata.displayName)") { NSApp.terminate(nil) }
         }
     }
 }
@@ -210,8 +218,12 @@ struct ProfilesView: View {
                     ProfileBadge(profile: profile, size: 62)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(profile.name).font(.largeTitle.weight(.semibold))
-                        Label(profile.archived ? "Archived" : model.running.contains(profile.id) ? "Claude is running" : "Ready to open",
-                              systemImage: profile.archived ? "archivebox" : model.running.contains(profile.id) ? "circle.fill" : "circle")
+                        Label {
+                            Text(profile.archived ? "Archived" : model.running.contains(profile.id) ? "Claude is running" : "Ready to open")
+                        } icon: {
+                            Image(systemName: profile.archived ? "archivebox" : model.running.contains(profile.id) ? "circle.fill" : "circle")
+                                .foregroundStyle(!profile.archived && model.running.contains(profile.id) ? Color.green : Color.secondary)
+                        }
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -226,8 +238,9 @@ struct ProfilesView: View {
                         Button { model.open(profile) } label: {
                             Label(model.opening.contains(profile.id) ? "Opening..." : model.running.contains(profile.id) ? "Focus Claude" : "Open Claude", systemImage: "arrow.up.forward.app")
                         }.buttonStyle(.borderedProminent).controlSize(.large)
-                            .disabled(model.opening.contains(profile.id) || !model.available || model.statusError != nil)
-                        Button("Create launcher...") { model.export(profile) }.controlSize(.large)
+                            .disabled(!model.canOpen(profile))
+                        Button(model.exporting.contains(profile.id) ? "Creating launcher..." : "Create launcher...") { model.export(profile) }
+                            .controlSize(.large).disabled(model.exporting.contains(profile.id))
                     }
                     GroupBox {
                         VStack(alignment: .leading, spacing: 12) {
@@ -255,7 +268,7 @@ struct ProfilesView: View {
                     Label(statusError, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
                 }
                 Divider()
-                Text("Claude \(model.version) · Loftlane preview 0.2\nUse these launchers to reopen profiles. Claude's own Dock icons may look identical. Recheck your accounts after Claude updates.")
+                Text("Claude \(model.version) · \(AppMetadata.displayName) preview \(AppMetadata.displayVersion)\nUse these launchers to reopen profiles. Claude's own Dock icons may look identical. Recheck your accounts after Claude updates.")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(30)
         }
@@ -279,13 +292,13 @@ struct ProfileEditor: View {
     let profile: Profile?
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var color = "Blue"
+    @State private var color: ProfileColor = .blue
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text(profile == nil ? "New profile" : "Edit profile").font(.title2.weight(.semibold))
             TextField("Name", text: $name).textFieldStyle(.roundedBorder)
-            Picker("Color", selection: $color) { ForEach(profileColors, id: \.self) { Text($0) } }
+            Picker("Color", selection: $color) { ForEach(ProfileColor.allCases, id: \.self) { Text($0.rawValue) } }
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack {
                 Spacer()
@@ -296,6 +309,6 @@ struct ProfileEditor: View {
                 }.keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 350)
-            .onAppear { name = profile?.name ?? ""; color = profile?.color ?? "Blue" }
+            .onAppear { name = profile?.name ?? ""; color = profile?.color ?? .blue }
     }
 }

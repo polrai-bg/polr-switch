@@ -1,12 +1,12 @@
-<p align="center"><img src="assets/Loftlane.png" width="180" alt="Loftlane: three luminous doorways on a midnight blue tile"></p>
-<h1 align="center">Loftlane</h1>
+<p align="center"><img src="assets/AppIcon.png" width="180" alt="POLR Switch: three luminous doorways on a midnight blue tile"></p>
+<h1 align="center">POLR Switch</h1>
 <p align="center">A little room for every account.</p>
 
 A native Mac launcher for keeping multiple Claude Desktop accounts organized. Your **Personal / Main** profile opens the normal installed Claude app with your existing login. Additional profiles open separate desktop data directories through their own unchanged, signed copies of Claude.
 
 **Preview · Apple Silicon · macOS 15+ · SwiftUI · No third-party dependencies**
 
-Loftlane is an independent project. It is not affiliated with or endorsed by Anthropic or MultiClaude. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
+POLR Switch is an independent project. It is not affiliated with or endorsed by Anthropic or MultiClaude. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
 
 ## What it does
 
@@ -17,20 +17,28 @@ Loftlane is an independent project. It is not affiliated with or endorsed by Ant
 - Archive and restore profiles without deleting their data.
 - Switch profiles from the window or menu bar.
 
-Loftlane manages launch paths and profile data directories. It does not handle passwords, read your conversations, proxy requests, rotate accounts, or run its own AI service.
+POLR Switch manages launch paths and profile data directories. It does not handle passwords, read your conversations, proxy requests, rotate accounts, or run its own AI service.
 
-## Build and run
+## Download and install
+
+[Download POLR Switch for Apple Silicon](https://github.com/polrai-bg/polr-switch/releases/download/v0.2.1/POLR-Switch-0.2.1-macOS-arm64.zip) or view the [release notes and checksum](https://github.com/polrai-bg/polr-switch/releases/tag/v0.2.1).
+
+Unzip, drag **POLR Switch.app** into Applications, and open it. You need macOS 15 or later and Claude Desktop installed. No build tools are needed to use this download.
+
+This preview is ad-hoc signed and **not notarized by Apple**. macOS may block the first launch. Read the [installation guide](docs/INSTALL.md) for Apple's documented first-launch process and the preview's limitations. Intel Macs are not supported by this download.
+
+## Build from source
 
 You need Apple Silicon, macOS 15 or later, Apple's Swift command-line tools with a macOS 15+ SDK, and Claude Desktop installed at `/Applications/Claude.app`. A recent full Xcode installation also supplies the tools, but an Xcode project is not required. The app uses APFS copy-on-write cloning for its local Claude copies.
 
 ```sh
-git clone https://github.com/polrai-bg/loftlane.git
-cd loftlane
+git clone https://github.com/polrai-bg/polr-switch.git
+cd polr-switch
 bash build.sh
-open dist/Loftlane.app
+open "dist/POLR Switch.app"
 ```
 
-The build runs the core tests, creates every macOS icon size, and ad-hoc signs `dist/Loftlane.app`. You can move that app into your Applications folder. It is a local build, not a notarized download.
+The build runs the core tests, creates every macOS icon size, and ad-hoc signs `dist/POLR Switch.app`. You can move that app into your Applications folder. It is a local build, not a notarized download.
 
 The script uses your selected macOS SDK. If the command-line tools include macOS 26.5, it prefers that SDK because the 27.0 command-line SDK tested during development omitted a SwiftUI macro plugin. Set `MACOSX_SDK_PATH` to override the SDK. Build output stays in ignored `.build/` and `dist/` directories.
 
@@ -42,7 +50,7 @@ The script uses your selected macOS SDK. If the command-line tools include macOS
 4. Use **Create launcher** to save a named app in your Applications folder. Pin that generated launcher to your Dock.
 5. Try a small Chat or Cowork task in each account using separate scratch folders before using real work files.
 
-Claude's runtime windows can still show identical names and icons. Pin the generated launcher, not the running Claude copy. Opening a runtime copy directly omits the profile argument. Loftlane checks process arguments and refuses a mismatched running copy, but it cannot verify which account you signed into.
+Claude's runtime windows can still show identical names and icons. Pin the generated launcher, not the running Claude copy. Opening a runtime copy directly omits the profile argument. POLR Switch checks process arguments and refuses a mismatched running copy, but it cannot verify which account you signed into.
 
 ## How it works
 
@@ -50,7 +58,7 @@ Main opens `/Applications/Claude.app` with no data-directory override. Each addi
 
 A closed profile copy is refreshed when its version differs from the installed Claude version. Active copies are not replaced. A previous copy is retained during replacement. This is version synchronization, not a guarantee that future Claude releases support the same behavior.
 
-Registry writes are atomic and protected by a lock. Storage directories use private permissions. Names never become storage paths, and symbolic links are rejected at storage boundaries.
+Registry writes are atomic and protected by a short lock. A separate per-profile lock coordinates launch, app-copy preparation, and archive operations across the manager and generated launchers. Copying, icon generation, and signing await subprocess completion without blocking the UI. Storage directories use private permissions. Names never become storage paths, and symbolic links are rejected at storage boundaries.
 
 ### Existing preview users
 
@@ -63,9 +71,9 @@ The app's storage directory and bundle identifier retain their original names to
   apps/<UUID>/Claude.app
 ```
 
-Renaming the app to Loftlane does not move profiles, sign you out, or change archive choices. Main still uses Claude's original storage. Very early preview launchers from before the Main-profile correction should be recreated using Loftlane.
+Renaming the app to POLR Switch does not move profiles, sign you out, or change archive choices. Main still uses Claude's original storage. Recreate launchers made by older previews using POLR Switch to gain the new cross-process launch coordination. Older wrappers remain compatible with account storage, but their old code cannot participate in the new lifecycle lock.
 
-Archiving, removing a launcher, or removing Loftlane does not delete account data. No permanent-deletion feature is included.
+Archiving, removing a launcher, or removing POLR Switch does not delete account data. No permanent-deletion feature is included.
 
 ## Tested and limited
 
@@ -80,7 +88,7 @@ Known limits:
 - Separate profiles are not an OS security boundary. They run as the same Mac user and may share machine resources.
 - OAuth callbacks may return to a different open Claude window.
 - The inspected Claude build disables local Chrome-extension pairing when its data directory is relocated. Other browser and MCP connection paths are unverified.
-- A real Claude update and updater-triggered restarts have not been tested. Reopen through Loftlane and recheck the account after updates.
+- A real Claude update and updater-triggered restarts have not been tested. Reopen through POLR Switch and recheck the account after updates.
 - Intel Macs, notarized distribution, and long-running multi-account stress tests are not covered.
 
 ## Development
@@ -94,7 +102,10 @@ The source is intentionally small:
 | `App.swift` | SwiftUI window, menu bar, editor, and launcher entry point |
 | `Tests.swift` | Core checks, run by the build |
 | `IntegrationTests.swift` | Optional live tests against installed Claude |
+| `AppMetadata.swift` and `Info.plist` | Shared manager and generated-launcher identity |
+| `LocalTool.swift` | Asynchronous local subprocess completion |
 | `build.sh` | Build, test, icon packaging, and local signing |
+| `release.sh` | ZIP creation, extraction/signature comparison, and SHA-256 checksum |
 
 The optional integration test creates fresh anonymous test profiles in a uniquely named temporary directory. It opens and normally closes those test apps, leaves their folders for inspection, and does not sign in or run Cowork. Run it only when you are ready for test Claude windows to open:
 
@@ -102,15 +113,25 @@ The optional integration test creates fresh anonymous test profiles in a uniquel
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 xcrun swiftc -swift-version 5 -sdk "$SDK" -module-cache-path .build/module-cache \
   -target arm64-apple-macosx15.0 -parse-as-library \
-  Core.swift Platform.swift IntegrationTests.swift -o .build/integration-tests
+  Core.swift AppMetadata.swift LocalTool.swift Platform.swift IntegrationTests.swift -o .build/integration-tests
 .build/integration-tests
 ```
+
+GitHub Actions runs the build, regression checks, and archive verification on an Apple Silicon macOS runner. Live Claude integration checks remain opt-in because they open desktop applications.
+
+To prepare a downloadable archive after building:
+
+```sh
+bash release.sh "dist/POLR Switch.app"
+```
+
+The script refuses to replace an existing archive and validates the extracted signature and files before writing its checksum. The [red-flag audit](docs/AUDIT.md) and [structural decision log](docs/DECISIONS.md) explain the release review.
 
 Issues and small, focused pull requests are welcome. Never include profile storage, login data, chat contents, or client screenshots in a report.
 
 ## Design and provenance
 
-Loftlane has its own name, native interface, and original doorway icon. The icon was generated for this project using OpenAI image generation; its [design brief](assets/DESIGN.md) is included. The runtime launcher icons use simple colored initials.
+POLR Switch has its own name, native interface, and original doorway icon. The icon was generated for this project using OpenAI image generation; its [design brief](assets/DESIGN.md) is included. The runtime launcher icons use simple colored initials.
 
 Research references for the underlying macOS/Electron approach include [Electron's app API](https://www.electronjs.org/docs/latest/api/app), [claude-multi.sh](https://github.com/IbrahimHosseini/multi-claude-app/blob/main/claude-multi.sh), and the [claude-multiprofile changelog](https://github.com/jmdarre-v/claude-multiprofile/blob/main/CHANGELOG.md). This implementation was written for this project; those applications and their branding are not bundled.
 

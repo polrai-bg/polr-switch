@@ -13,7 +13,7 @@ enum ClaudeLauncher {
 
     static func running(_ spec: LaunchSpec) throws -> NSRunningApplication? {
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop") {
-            guard !app.isTerminated else { continue }
+            guard !app.isTerminated, let path = app.executableURL?.path, spec.ownsExecutable(path) else { continue }
             do {
                 if spec.matches(try ProcessArguments.read(app.processIdentifier)) { return app }
             } catch {
@@ -23,7 +23,7 @@ enum ClaudeLauncher {
         return nil
     }
 
-    private static func prepareCopy(_ target: URL, store: ProfileStore) throws {
+    private static func prepareCopy(_ target: URL, store: ProfileStore) async throws {
         let fm = FileManager.default
         let parent = target.deletingLastPathComponent()
         try store.privateDirectory(parent)
@@ -35,8 +35,8 @@ enum ClaudeLauncher {
         let stage = parent.appendingPathComponent("staging-\(UUID().uuidString).app")
         let previous = parent.appendingPathComponent("Previous Claude.app")
         defer { try? fm.removeItem(at: stage) }
-        try runLocalTool("/bin/cp", ["-cR", app.path, stage.path])
-        try runLocalTool("/usr/bin/codesign", ["--verify", "--deep", "--strict", stage.path])
+        try await runLocalTool("/bin/cp", ["-cR", app.path, stage.path])
+        try await runLocalTool("/usr/bin/codesign", ["--verify", "--deep", "--strict", stage.path])
         if fm.fileExists(atPath: previous.path) { try fm.removeItem(at: previous) }
         let replacing = fm.fileExists(atPath: target.path)
         if replacing { try fm.moveItem(at: target, to: previous) }
@@ -48,6 +48,8 @@ enum ClaudeLauncher {
     }
 
     static func open(_ id: UUID, store: ProfileStore) async throws -> pid_t {
+        let lease = try store.operationLease(id)
+        defer { lease.release() }
         let profile = try store.profile(id)
         if !profile.isMain { _ = try store.prepare(id) }
         guard Bundle(url: app)?.bundleIdentifier == "com.anthropic.claudefordesktop",
@@ -56,7 +58,7 @@ enum ClaudeLauncher {
         }
         let spec = spec(profile, store: store)
         for candidate in NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop") {
-            guard !candidate.isTerminated, candidate.executableURL?.path == spec.executable.path else { continue }
+            guard !candidate.isTerminated, let path = candidate.executableURL?.path, spec.ownsExecutable(path) else { continue }
             let arguments = try ProcessArguments.read(candidate.processIdentifier)
             guard spec.matches(arguments) else {
                 throw ProfileError.message("A Claude window at this app path is using another profile. Quit that window, then reopen it through its named launcher.")
@@ -68,7 +70,7 @@ enum ClaudeLauncher {
             guard try running(legacy) == nil else {
                 throw ProfileError.message("Quit this profile's older Claude window before opening its updated app copy. Its data is preserved.")
             }
-            try prepareCopy(spec.app, store: store)
+            try await prepareCopy(spec.app, store: store)
         }
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = false
@@ -89,20 +91,34 @@ enum ClaudeLauncher {
         throw ProfileError.message("This Claude window did not use the intended profile. Quit that window and reopen it using the manager or its named launcher.")
     }
 
+    static func setArchived(_ id: UUID, _ archived: Bool, store: ProfileStore) throws {
+        let lease = try store.operationLease(id)
+        defer { lease.release() }
+        guard let profile = try store.load().first(where: { $0.id == id }) else {
+            throw ProfileError.message("Profile not found.")
+        }
+        if archived {
+            let legacy = LaunchSpec(app: app, data: profile.isMain ? nil : store.dataURL(id))
+            guard try running(spec(profile, store: store)) == nil, try running(legacy) == nil else {
+                throw ProfileError.message("Quit this profile's Claude window before archiving it. Its data and saved login will be kept.")
+            }
+        }
+        try store.setArchived(id, archived)
+    }
 }
 
 @MainActor
 enum ProfileArtwork {
-    static func color(_ name: String) -> NSColor {
-        switch name {
-        case "Orange": return .systemOrange
-        case "Green": return .systemGreen
-        case "Purple": return .systemPurple
-        default: return .systemBlue
+    static func color(_ color: ProfileColor) -> NSColor {
+        switch color {
+        case .orange: return .systemOrange
+        case .green: return .systemGreen
+        case .purple: return .systemPurple
+        case .blue: return .systemBlue
         }
     }
 
-    static func png(label: String, color: String, size: Int) -> Data? {
+    static func png(label: String, color: ProfileColor, size: Int) -> Data? {
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
@@ -126,7 +142,7 @@ enum ProfileArtwork {
 
 @MainActor
 enum LauncherBundle {
-    static func export(_ profile: Profile, to destination: URL) throws {
+    static func export(_ profile: Profile, to destination: URL) async throws {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: destination.path), let source = Bundle.main.executableURL else {
             throw ProfileError.message("Choose a new launcher filename. Existing files are never overwritten.")
@@ -137,15 +153,9 @@ enum LauncherBundle {
         let resources = stage.appendingPathComponent("Contents/Resources", isDirectory: true)
         try fm.createDirectory(at: macos, withIntermediateDirectories: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
-        try fm.copyItem(at: source, to: macos.appendingPathComponent("Loftlane"))
-        let plist: [String: Any] = [
-            "CFBundleIdentifier": "com.polrai.claudeprofiles.profile.\(profile.id.uuidString.lowercased())",
-            "CFBundleName": "Loftlane \(profile.name)", "CFBundleDisplayName": "Loftlane \(profile.name)",
-            "CFBundleExecutable": "Loftlane", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "2",
-            "LSMinimumSystemVersion": "15.0", "LSUIElement": true, "NSHighResolutionCapable": true,
-            "ProfileID": profile.id.uuidString, "CFBundleIconFile": "Profile.icns"
-        ]
+        let metadata = try AppMetadata(info: Bundle.main.infoDictionary ?? [:])
+        try fm.copyItem(at: source, to: macos.appendingPathComponent(metadata.executable))
+        let plist = metadata.launcherInfo(profile)
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             .write(to: stage.appendingPathComponent("Contents/Info.plist"))
         let iconset = stage.appendingPathComponent("Profile.iconset", isDirectory: true)
@@ -159,24 +169,11 @@ enum LauncherBundle {
                 try png.write(to: iconset.appendingPathComponent("icon_\(size)x\(size)\(suffix).png"))
             }
         }
-        try runLocalTool("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("Profile.icns").path])
+        try await runLocalTool("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("Profile.icns").path])
         try fm.removeItem(at: iconset)
-        try runLocalTool("/usr/bin/codesign", ["--force", "--sign", "-", stage.path])
-        try runLocalTool("/usr/bin/codesign", ["--verify", "--strict", stage.path])
+        try await runLocalTool("/usr/bin/codesign", ["--force", "--sign", "-", stage.path])
+        try await runLocalTool("/usr/bin/codesign", ["--verify", "--strict", stage.path])
         try fm.moveItem(at: stage, to: destination)
     }
 
 }
-
-func runLocalTool(_ path: String, _ args: [String]) throws {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: path)
-        task.arguments = args
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        try task.run()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else {
-            throw ProfileError.message("Could not prepare the launcher (\(URL(fileURLWithPath: path).lastPathComponent)). No existing app was changed.")
-        }
-    }
