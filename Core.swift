@@ -63,7 +63,11 @@ final class ProfileStore {
     private let fm = FileManager.default
     var registryURL: URL { root.appendingPathComponent("profiles.json") }
 
-    init(root: URL) { self.root = root.standardizedFileURL }
+    init(root: URL) {
+        let standardized = root.standardizedFileURL
+        self.root = standardized.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(standardized.lastPathComponent, isDirectory: true).standardizedFileURL
+    }
 
     // Keep the preview storage location so existing logins and launchers continue to work.
     static var standard: ProfileStore {
@@ -72,9 +76,7 @@ final class ProfileStore {
     }
 
     func rejectSymlink(_ url: URL, message: String = "A profile storage path is a symbolic link. Choose a normal local folder.") throws {
-        let target = url.standardizedFileURL
-        let stopAtRoot = target.path == root.path || target.path.hasPrefix(root.path + "/")
-        var current = target
+        var current = url.standardizedFileURL
         while true {
             var info = stat()
             if Darwin.lstat(current.path, &info) == 0 {
@@ -84,7 +86,7 @@ final class ProfileStore {
             } else if errno != ENOENT {
                 throw ProfileError.message(message)
             }
-            if (stopAtRoot && current.path == root.path) || current.path == "/" { break }
+            if current.path == root.path || current.path == "/" { break }
             let parent = current.deletingLastPathComponent().standardizedFileURL
             if parent.path == current.path { break }
             current = parent
