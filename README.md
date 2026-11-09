@@ -35,9 +35,9 @@ POLR Switch manages launch paths and profile data directories. It does not handl
 
 ## Download and install
 
-Version **0.2.2** is currently available in source builds. The downloadable **v0.2.1** release predates these updates.
+Version **0.2.2** is available as a ready-to-use Mac download, including the refreshed interface and profile-colored running icons.
 
-[Download POLR Switch for Apple Silicon](https://github.com/polrai-bg/polr-switch/releases/download/v0.2.1/POLR-Switch-0.2.1-macOS-arm64.zip) or view the [release notes and checksum](https://github.com/polrai-bg/polr-switch/releases/tag/v0.2.1).
+[Download POLR Switch for Apple Silicon](https://github.com/polrai-bg/polr-switch/releases/download/v0.2.2/POLR-Switch-0.2.2-macOS-arm64.zip) or view the [release notes and checksum](https://github.com/polrai-bg/polr-switch/releases/tag/v0.2.2).
 
 Unzip, drag **POLR Switch.app** into Applications, and open it. You need macOS 15 or later and Claude Desktop installed. No build tools are needed to use this download.
 
