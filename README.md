@@ -6,12 +6,21 @@
 
 A native Mac launcher for keeping multiple Claude Desktop accounts organized. Your **Personal / Main** profile opens the normal installed Claude app with your existing login. Additional profiles open separate desktop data directories through their own unchanged, signed copies of Claude.
 
-**Preview · Apple Silicon · macOS 15+ · SwiftUI · No third-party dependencies**
+**v0.2.2 Preview · Apple Silicon · macOS 15+ · SwiftUI · No third-party dependencies**
 
 POLR Switch is an independent project. It is not affiliated with or endorsed by Anthropic. Claude is a product of Anthropic. No Claude application code or binaries are distributed in this repository.
 
 <p align="center"><img src="assets/screenshot.png" width="800" alt="POLR Switch showing Main running alongside Profile 2 and Profile 3"></p>
 <p align="center"><sub>Example profile names shown for privacy.</sub></p>
+
+## What's new in v0.2.2
+
+- A refreshed native interface with a cleaner sidebar, clearer actions, and refined profile cards.
+- Profile-colored icons for running Claude instances, making accounts easier to tell apart in the Dock. Main keeps the standard Claude icon.
+- Green sidebar indicators show which profiles are running.
+- A profile editor that opens with the saved name and color already filled in.
+
+Existing profile data and logins are preserved. Quit and reopen a profile after changing its name or color to refresh its running icon.
 
 ## What it does
 
@@ -26,7 +35,7 @@ POLR Switch manages launch paths and profile data directories. It does not handl
 
 ## Download and install
 
-The interface refresh and profile-colored running icons are available in source builds. The downloadable v0.2.1 release predates these updates.
+Version **0.2.2** is currently available in source builds. The downloadable **v0.2.1** release predates these updates.
 
 [Download POLR Switch for Apple Silicon](https://github.com/polrai-bg/polr-switch/releases/download/v0.2.1/POLR-Switch-0.2.1-macOS-arm64.zip) or view the [release notes and checksum](https://github.com/polrai-bg/polr-switch/releases/tag/v0.2.1).
 
