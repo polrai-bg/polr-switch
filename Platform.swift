@@ -87,6 +87,7 @@ enum ClaudeLauncher {
             }
             try await prepareCopy(spec.app, store: store)
         }
+        try ProfileArtwork.apply(to: profile, store: store)
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = false
         config.allowsRunningApplicationSubstitution = false
@@ -124,6 +125,20 @@ enum ClaudeLauncher {
 
 @MainActor
 enum ProfileArtwork {
+    static func apply(to profile: Profile, store: ProfileStore) throws {
+        guard !profile.isMain else { return }
+        let app = ClaudeLauncher.spec(profile, store: store).app
+        try store.rejectSymlink(app.appendingPathComponent("Icon\r"))
+        guard let data = png(label: profile.name, color: profile.color, size: 512),
+              let image = NSImage(data: data) else {
+            throw ProfileError.message("Could not render this profile's Dock icon.")
+        }
+        guard NSWorkspace.shared.setIcon(image, forFile: app.path, options: []) else {
+            throw ProfileError.message("Could not apply this profile's Dock icon. Check the profile app's folder permissions, then try again.")
+        }
+        // Finder metadata keeps Claude's signed Contents intact; never re-sign Claude.
+    }
+
     static func color(_ color: ProfileColor) -> NSColor {
         switch color {
         case .orange: return .systemOrange

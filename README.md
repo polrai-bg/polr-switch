@@ -17,7 +17,7 @@ POLR Switch is an independent project. It is not affiliated with or endorsed by 
 
 - Open or focus your usual Claude account without creating a new Main profile.
 - Keep additional accounts signed in through named profiles.
-- Create individual `.app` launchers with colored initials for your Dock.
+- Create individual `.app` launchers with colored initials for your Dock. Separate running Claude profiles use the same color and initial; Main keeps the original Claude icon.
 - Rename profiles without moving their data or changing their stable IDs.
 - Archive and restore profiles without deleting their data.
 - Switch profiles from the window or menu bar.
@@ -25,6 +25,8 @@ POLR Switch is an independent project. It is not affiliated with or endorsed by 
 POLR Switch manages launch paths and profile data directories. It does not handle passwords, read your conversations, proxy requests, rotate accounts, or run its own AI service.
 
 ## Download and install
+
+The interface refresh and profile-colored running icons are available in source builds. The downloadable v0.2.1 release predates these updates.
 
 [Download POLR Switch for Apple Silicon](https://github.com/polrai-bg/polr-switch/releases/download/v0.2.1/POLR-Switch-0.2.1-macOS-arm64.zip) or view the [release notes and checksum](https://github.com/polrai-bg/polr-switch/releases/tag/v0.2.1).
 
@@ -34,7 +36,7 @@ This preview is ad-hoc signed and **not notarized by Apple**. macOS may block th
 
 ## Build from source
 
-You need Apple Silicon, macOS 15 or later, Apple's Swift command-line tools with a macOS 15+ SDK, and Claude Desktop installed at `/Applications/Claude.app`. A recent full Xcode installation also supplies the tools, but an Xcode project is not required. The app uses APFS copy-on-write cloning for its local Claude copies.
+You need Apple Silicon, macOS 15 or later, Apple's Swift command-line tools with a macOS 15+ SDK, and Claude Desktop installed at `/Applications/Claude.app`. A recent full Xcode installation also supplies the tools, but an Xcode project is not required. The app uses APFS copy-on-write cloning for its local Claude copies. It applies native macOS custom-icon metadata to those copies without modifying their signed Contents or re-signing Claude. This Finder metadata makes a whole-bundle `codesign --verify --strict` check report resource-fork/Finder-info detritus; pristine copies are verified before the icon is applied.
 
 ```sh
 git clone https://github.com/polrai-bg/polr-switch.git
@@ -55,7 +57,7 @@ The script uses your selected macOS SDK. If the command-line tools include macOS
 4. Use **Create launcher** to save a named app in your Applications folder. Pin that generated launcher to your Dock.
 5. Try a small Chat or Cowork task in each account using separate scratch folders before using real work files.
 
-Claude's runtime windows can still show identical names and icons. Pin the generated launcher, not the running Claude copy. Opening a runtime copy directly omits the profile argument. POLR Switch checks process arguments and refuses a mismatched running copy, but it cannot verify which account you signed into.
+Separate running Claude profiles use their profile color and initial in the Dock. Quit and reopen a profile through POLR Switch after changing its name or color. Main keeps the original Claude icon. Window names can still be identical. Pin the generated launcher, not the running Claude copy. Opening a runtime copy directly omits the profile argument. POLR Switch checks process arguments and refuses a mismatched running copy, but it cannot verify which account you signed into.
 
 ## How it works
 

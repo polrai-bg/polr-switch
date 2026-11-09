@@ -137,6 +137,16 @@ struct Tests {
         let plistURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Info.plist")
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), options: [], format: nil) as! [String: Any]
         let metadata = try AppMetadata(info: plist)
+        let iconProfile = try store.profile(id)
+        let iconApp = ClaudeLauncher.spec(iconProfile, store: store).app
+        try fm.createDirectory(at: iconApp, withIntermediateDirectories: true)
+        let iconTarget = root.appendingPathComponent("protected-icon")
+        try Data("untouched".utf8).write(to: iconTarget)
+        try fm.createSymbolicLink(at: iconApp.appendingPathComponent("Icon\r"), withDestinationURL: iconTarget)
+        rejects { try ProfileArtwork.apply(to: iconProfile, store: store) }
+        check(try Data(contentsOf: iconTarget) == Data("untouched".utf8))
+        print("PASS: custom Dock icons reject symlinked icon metadata")
+
         let renamedProfile = try store.profile(id)
         let launcher = metadata.launcherInfo(renamedProfile)
         for key in ["CFBundleName", "CFBundleExecutable", "CFBundleShortVersionString", "CFBundleVersion", "LSMinimumSystemVersion"] {

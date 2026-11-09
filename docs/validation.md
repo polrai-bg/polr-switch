@@ -33,3 +33,13 @@ Release archives are extracted and compared byte-for-byte with the built app, th
 - Long-running workload behavior, all login methods, and Intel compatibility.
 
 These observations cover one Claude version on one Mac. They are not a certification of account isolation or a guarantee for future versions.
+
+
+## Profile Dock icons, November 9, 2026
+
+- The shared launch path applies the profile's colored initial to its Claude copy using `NSWorkspace.setIcon`; Main is excluded.
+- Live disposable-profile integration checks passed for distinct blue and orange running application icons, repeated-launch reuse, and a green icon after changing color and reopening.
+- Pristine Claude copies pass strict signature verification before customization. Native Finder custom-icon metadata causes strict whole-bundle verification to report detritus. A verification clone passes again after removing that metadata, confirming that the signed Contents remain intact. The original Claude app also passes.
+- Regression checks cover a symlinked custom-icon file being rejected without modifying its target.
+- A windowless native GUI diagnostic confirmed icon application on the actual local profile copy. GUI automation launched with a filesystem sandbox could not write that copy; the same diagnostic passed outside that sandbox.
+- Color/name changes take effect after quitting and reopening the profile. Claude update behavior and Cowork execution were not retested in this pass.
