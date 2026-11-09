@@ -71,10 +71,28 @@ final class ProfileStore {
             .appendingPathComponent("Library/Application Support/Claude Profiles", isDirectory: true))
     }
 
-    func privateDirectory(_ url: URL) throws {
-        guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().standardizedFileURL.path else {
-            throw ProfileError.message("A profile storage path is a symbolic link. Choose a normal local folder.")
+    func rejectSymlink(_ url: URL, message: String = "A profile storage path is a symbolic link. Choose a normal local folder.") throws {
+        let target = url.standardizedFileURL
+        let stopAtRoot = target.path == root.path || target.path.hasPrefix(root.path + "/")
+        var current = target
+        while true {
+            var info = stat()
+            if Darwin.lstat(current.path, &info) == 0 {
+                if (info.st_mode & S_IFMT) == S_IFLNK {
+                    throw ProfileError.message(message)
+                }
+            } else if errno != ENOENT {
+                throw ProfileError.message(message)
+            }
+            if (stopAtRoot && current.path == root.path) || current.path == "/" { break }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.path == current.path { break }
+            current = parent
         }
+    }
+
+    func privateDirectory(_ url: URL) throws {
+        try rejectSymlink(url)
         try fm.createDirectory(at: url, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
@@ -93,9 +111,7 @@ final class ProfileStore {
     }
 
     private func read() throws -> Registry {
-        guard registryURL.standardizedFileURL.path == registryURL.resolvingSymlinksInPath().standardizedFileURL.path else {
-            throw ProfileError.message("The profile registry must not be a symbolic link.")
-        }
+        try rejectSymlink(registryURL, message: "The profile registry must not be a symbolic link.")
         guard fm.fileExists(atPath: registryURL.path) else { return Registry(profiles: []) }
         let attrs = try fm.attributesOfItem(atPath: registryURL.path)
         guard attrs[.type] as? FileAttributeType == .typeRegular,
@@ -220,10 +236,14 @@ struct LaunchSpec {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path == executable.resolvingSymlinksInPath().path
     }
 
+    static func isHelperProcess(_ arguments: [String]) -> Bool {
+        arguments.contains(where: { $0.hasPrefix("--type=") })
+    }
+
     func matches(_ arguments: [String]) -> Bool {
         guard let first = arguments.first, ownsExecutable(first) else { return false }
         let flags = arguments.dropFirst().filter { $0.hasPrefix("--user-data-dir=") || $0 == "--user-data-dir" }
-        guard !arguments.contains(where: { $0.hasPrefix("--type=") }) else { return false }
+        guard !Self.isHelperProcess(arguments) else { return false }
         return data == nil ? flags.isEmpty : flags.count == 1 && flags.first == self.arguments.first
     }
 }

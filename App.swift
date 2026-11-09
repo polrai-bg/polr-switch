@@ -14,13 +14,34 @@ final class ProfilesModel: ObservableObject {
     @Published var error: String?
     @Published var statusError: String?
     @Published var available = false
+    @Published var showArchived = false {
+        didSet { ensureValidSelection() }
+    }
     @Published var version = ClaudeLauncher.version
     private var timer: Timer?
+    private var observers: [NSObjectProtocol] = []
+
+    var visibleProfiles: [Profile] {
+        profiles.filter { showArchived || !$0.archived }
+    }
+
+    private func ensureValidSelection() {
+        if !visibleProfiles.contains(where: { $0.id == selected }) {
+            selected = visibleProfiles.first?.id
+        }
+    }
 
     func start() {
         do { try store.seed(); try reload(); available = true }
         catch { self.error = error.localizedDescription }
         refresh()
+        guard timer == nil else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in self.refresh() }
+            })
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
             Task { @MainActor in self.refresh() }
         }
@@ -28,9 +49,7 @@ final class ProfilesModel: ObservableObject {
 
     func reload() throws {
         profiles = try store.load()
-        if !profiles.contains(where: { $0.id == selected }) {
-            selected = profiles.first(where: { !$0.archived })?.id
-        }
+        ensureValidSelection()
     }
 
     func refresh() {
@@ -48,7 +67,7 @@ final class ProfilesModel: ObservableObject {
     }
 
     func canOpen(_ profile: Profile) -> Bool {
-        available && statusError == nil && !profile.archived && !opening.contains(profile.id)
+        available && !profile.archived && !opening.contains(profile.id)
     }
 
     func open(_ profile: Profile) {
@@ -145,8 +164,16 @@ struct POLRSwitchApp: App {
         }
         MenuBarExtra(AppMetadata.displayName, systemImage: "square.stack.3d.up", isInserted: .constant(!isLauncher)) {
             ForEach(model.profiles.filter { !$0.archived }) { profile in
-                Button("\(model.running.contains(profile.id) ? "Focus" : "Open") \(profile.name)") { model.open(profile) }
-                    .disabled(!model.canOpen(profile))
+                Button { model.open(profile) } label: {
+                    Label("\(model.running.contains(profile.id) ? "Focus" : "Open") \(profile.name)",
+                          systemImage: model.running.contains(profile.id) ? "circle.fill" : "circle")
+                }
+                .disabled(!model.canOpen(profile))
+            }
+            if let issue = model.statusError ?? (!model.available ? model.error : nil) {
+                Divider()
+                Text(issue)
+                Button("Retry status check") { model.refresh() }
             }
             Divider()
             ShowManagerButton()
@@ -164,7 +191,6 @@ struct ShowManagerButton: View {
 
 struct ProfilesView: View {
     @ObservedObject var model: ProfilesModel
-    @State private var showArchived = false
     @State private var editing = false
     @State private var editingProfile: Profile?
     @State private var archiveCandidate: Profile?
@@ -173,7 +199,7 @@ struct ProfilesView: View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 List(selection: $model.selected) {
-                    ForEach(model.profiles.filter { showArchived || !$0.archived }) { profile in
+                    ForEach(model.visibleProfiles) { profile in
                         HStack(spacing: 10) {
                             ProfileBadge(profile: profile, size: 32)
                             VStack(alignment: .leading, spacing: 3) {
@@ -189,11 +215,11 @@ struct ProfilesView: View {
                     Button { editingProfile = nil; editing = true } label: {
                         Label("Add profile", systemImage: "plus")
                     }.disabled(!model.available)
-                    Toggle("Show archived", isOn: $showArchived).font(.caption)
+                    Toggle("Show archived", isOn: $model.showArchived).font(.caption)
                 }.padding(16)
             }.navigationSplitViewColumnWidth(min: 200, ideal: 225)
         } detail: {
-            if let profile = model.profiles.first(where: { $0.id == model.selected }) {
+            if let profile = model.visibleProfiles.first(where: { $0.id == model.selected }) {
                 detail(profile)
             } else {
                 ContentUnavailableView("Your Claude profiles", systemImage: "square.stack.3d.up",
@@ -265,7 +291,11 @@ struct ProfilesView: View {
                     }
                 }
                 if let statusError = model.statusError {
-                    Label(statusError, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
+                    HStack {
+                        Label(statusError, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
+                        Spacer()
+                        Button("Retry") { model.refresh() }.controlSize(.small)
+                    }
                 }
                 Divider()
                 Text("Claude \(model.version) · \(AppMetadata.displayName) preview \(AppMetadata.displayVersion)\nUse these launchers to reopen profiles. Claude's own Dock icons may look identical. Recheck your accounts after Claude updates.")

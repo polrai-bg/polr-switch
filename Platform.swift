@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 @MainActor
 enum ClaudeLauncher {
@@ -11,13 +12,20 @@ enum ClaudeLauncher {
         return LaunchSpec(app: profile.isMain ? app : copy, data: profile.isMain ? nil : store.dataURL(profile.id))
     }
 
+    private static func isLiveProcess(_ app: NSRunningApplication) -> Bool {
+        guard !app.isTerminated else { return false }
+        let pid = app.processIdentifier
+        guard pid > 0 else { return false }
+        return Darwin.kill(pid, 0) == 0 || errno != ESRCH
+    }
+
     static func running(_ spec: LaunchSpec) throws -> NSRunningApplication? {
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop") {
-            guard !app.isTerminated, let path = app.executableURL?.path, spec.ownsExecutable(path) else { continue }
+            guard isLiveProcess(app), let path = app.executableURL?.path, spec.ownsExecutable(path) else { continue }
             do {
                 if spec.matches(try ProcessArguments.read(app.processIdentifier)) { return app }
             } catch {
-                if !app.isTerminated { throw error }
+                if isLiveProcess(app) { throw error }
             }
         }
         return nil
@@ -27,9 +35,7 @@ enum ClaudeLauncher {
         let fm = FileManager.default
         let parent = target.deletingLastPathComponent()
         try store.privateDirectory(parent)
-        guard target.standardizedFileURL.path == target.resolvingSymlinksInPath().standardizedFileURL.path else {
-            throw ProfileError.message("The profile app must not be a symbolic link.")
-        }
+        try store.rejectSymlink(target, message: "The profile app must not be a symbolic link.")
         if Bundle(url: target)?.bundleIdentifier == "com.anthropic.claudefordesktop",
            Bundle(url: target)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version { return }
         let stage = parent.appendingPathComponent("staging-\(UUID().uuidString).app")
@@ -42,9 +48,10 @@ enum ClaudeLauncher {
         if replacing { try fm.moveItem(at: target, to: previous) }
         do { try fm.moveItem(at: stage, to: target) }
         catch {
-            if replacing { try fm.moveItem(at: previous, to: target) }
+            if replacing { try? fm.moveItem(at: previous, to: target) }
             throw error
         }
+        if replacing { try? fm.removeItem(at: previous) }
     }
 
     static func open(_ id: UUID, store: ProfileStore) async throws -> pid_t {
@@ -57,14 +64,22 @@ enum ClaudeLauncher {
             throw ProfileError.message("Install Claude Desktop in Applications before opening a profile.")
         }
         let spec = spec(profile, store: store)
+        var existing: NSRunningApplication?
         for candidate in NSRunningApplication.runningApplications(withBundleIdentifier: "com.anthropic.claudefordesktop") {
-            guard !candidate.isTerminated, let path = candidate.executableURL?.path, spec.ownsExecutable(path) else { continue }
-            let arguments = try ProcessArguments.read(candidate.processIdentifier)
+            guard isLiveProcess(candidate), let path = candidate.executableURL?.path, spec.ownsExecutable(path) else { continue }
+            let arguments: [String]
+            do {
+                arguments = try ProcessArguments.read(candidate.processIdentifier)
+            } catch {
+                if !isLiveProcess(candidate) { continue }
+                throw error
+            }
+            if LaunchSpec.isHelperProcess(arguments) { continue }
             guard spec.matches(arguments) else {
                 throw ProfileError.message("A Claude window at this app path is using another profile. Quit that window, then reopen it through its named launcher.")
             }
+            existing = existing ?? candidate
         }
-        let existing = try running(spec)
         if !profile.isMain && existing == nil {
             let legacy = LaunchSpec(app: app, data: store.dataURL(id))
             guard try running(legacy) == nil else {
@@ -82,7 +97,7 @@ enum ClaudeLauncher {
         }
         // shortcut: verify launch identity, not account identity; account checks remain part of setup.
         for _ in 0..<20 {
-            if opened.isTerminated { break }
+            if !isLiveProcess(opened) { break }
             if let args = try? ProcessArguments.read(opened.processIdentifier), spec.matches(args) {
                 return opened.processIdentifier
             }
@@ -142,9 +157,26 @@ enum ProfileArtwork {
 
 @MainActor
 enum LauncherBundle {
-    static func export(_ profile: Profile, to destination: URL) async throws {
+    static func canReplace(at destination: URL) -> Bool {
+        var info = stat()
+        if Darwin.lstat(destination.path, &info) != 0 { return errno == ENOENT }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        let plistURL = destination.appendingPathComponent("Contents/Info.plist")
+        guard Darwin.lstat(plistURL.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let profileID = plist["ProfileID"] as? String,
+              UUID(uuidString: profileID) != nil else {
+            return false
+        }
+        return true
+    }
+
+    static func export(_ profile: Profile, to destination: URL,
+                       executableURL: URL? = Bundle.main.executableURL,
+                       info: [String: Any]? = Bundle.main.infoDictionary) async throws {
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: destination.path), let source = Bundle.main.executableURL else {
+        guard canReplace(at: destination), let source = executableURL else {
             throw ProfileError.message("Choose a new launcher filename. Existing files are never overwritten.")
         }
         let stage = destination.deletingLastPathComponent().appendingPathComponent(".profile-\(UUID().uuidString).app")
@@ -153,7 +185,7 @@ enum LauncherBundle {
         let resources = stage.appendingPathComponent("Contents/Resources", isDirectory: true)
         try fm.createDirectory(at: macos, withIntermediateDirectories: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
-        let metadata = try AppMetadata(info: Bundle.main.infoDictionary ?? [:])
+        let metadata = try AppMetadata(info: info ?? [:])
         try fm.copyItem(at: source, to: macos.appendingPathComponent(metadata.executable))
         let plist = metadata.launcherInfo(profile)
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
@@ -173,7 +205,15 @@ enum LauncherBundle {
         try fm.removeItem(at: iconset)
         try await runLocalTool("/usr/bin/codesign", ["--force", "--sign", "-", stage.path])
         try await runLocalTool("/usr/bin/codesign", ["--verify", "--strict", stage.path])
-        try fm.moveItem(at: stage, to: destination)
+        var existingInfo = stat()
+        if Darwin.lstat(destination.path, &existingInfo) == 0 {
+            guard canReplace(at: destination) else {
+                throw ProfileError.message("Choose a new launcher filename. Existing files are never overwritten.")
+            }
+            _ = try fm.replaceItemAt(destination, withItemAt: stage)
+        } else {
+            try fm.moveItem(at: stage, to: destination)
+        }
     }
 
 }

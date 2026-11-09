@@ -64,6 +64,8 @@ struct Tests {
         check(!spec.matches(["/bin/echo"] + spec.arguments))
         check(!spec.matches([spec.executable.path] + spec.arguments + spec.arguments))
         check(!spec.matches([spec.executable.path] + spec.arguments + ["--type=renderer"]))
+        check(LaunchSpec.isHelperProcess([spec.executable.path, "--type=renderer"]))
+        check(!LaunchSpec.isHelperProcess([spec.executable.path] + spec.arguments))
         let args = [spec.executable.path, spec.arguments[0], "", "--test"]
         var count = Int32(args.count)
         var buffer = withUnsafeBytes(of: &count) { Array($0) }
@@ -97,6 +99,16 @@ struct Tests {
         let alias = root.appendingPathComponent("alias")
         try fm.createSymbolicLink(at: alias, withDestinationURL: path)
         rejects { try store.privateDirectory(alias) }
+        let danglingAlias = root.appendingPathComponent("dangling-alias")
+        try fm.createSymbolicLink(at: danglingAlias, withDestinationURL: root.appendingPathComponent("missing-target"))
+        rejects { try store.privateDirectory(danglingAlias) }
+        rejects { try store.privateDirectory(danglingAlias.appendingPathComponent("nested")) }
+        rejects { try ProfileStore(root: alias).seed() }
+        let tmpRoot = URL(fileURLWithPath: "/tmp").appendingPathComponent("claude-profiles-tmp-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmpRoot) }
+        let tmpStore = ProfileStore(root: tmpRoot)
+        try tmpStore.seed()
+        check(try tmpStore.load().count == 2)
         check(try store.load().count == 3)
         var legacy = Registry(profiles: try store.load())
         legacy.version = 1
@@ -125,7 +137,8 @@ struct Tests {
         let plistURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Info.plist")
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), options: [], format: nil) as! [String: Any]
         let metadata = try AppMetadata(info: plist)
-        let launcher = metadata.launcherInfo(try store.profile(id))
+        let renamedProfile = try store.profile(id)
+        let launcher = metadata.launcherInfo(renamedProfile)
         for key in ["CFBundleName", "CFBundleExecutable", "CFBundleShortVersionString", "CFBundleVersion", "LSMinimumSystemVersion"] {
             check(launcher[key] as? String == plist[key] as? String)
         }
@@ -133,6 +146,23 @@ struct Tests {
         check(launcher["ProfileID"] as? String == id.uuidString)
         check(launcher["CFBundleDisplayName"] as? String == "\(metadata.name) Renamed")
         rejects { _ = try AppMetadata(info: [:]) }
+        let exportedURL = root.appendingPathComponent("POLR Switch Renamed.app")
+        let binaryURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        try await LauncherBundle.export(renamedProfile, to: exportedURL, executableURL: binaryURL, info: plist)
+        check(LauncherBundle.canReplace(at: exportedURL))
+        var updatedProfile = renamedProfile
+        updatedProfile.name = "Renamed Again"
+        try await LauncherBundle.export(updatedProfile, to: exportedURL, executableURL: binaryURL, info: plist)
+        let exportedPlist = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: exportedURL.appendingPathComponent("Contents/Info.plist")),
+            options: [], format: nil) as! [String: Any]
+        check(exportedPlist["CFBundleDisplayName"] as? String == "\(metadata.name) Renamed Again")
+        check(!LauncherBundle.canReplace(at: fixtureApp))
+        check(!LauncherBundle.canReplace(at: fixtureAlias))
+        do {
+            try await LauncherBundle.export(updatedProfile, to: fixtureApp, executableURL: binaryURL, info: plist)
+            fatalError("Non-launcher bundle should not be overwritten")
+        } catch { check(error.localizedDescription.contains("never overwritten")) }
         try await runLocalTool("/usr/bin/true", [])
         do {
             try await runLocalTool("/usr/bin/false", [])
