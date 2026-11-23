@@ -80,9 +80,9 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
-    func save(_ profile: Profile?, name: String, color: ProfileColor) -> Bool {
+    func save(_ profile: Profile?, name: String, color: ProfileColor, icon: ProfileIconUpdate) -> Bool {
         do {
-            selected = try store.save(id: profile?.id, name: name, color: color)
+            selected = try store.save(id: profile?.id, name: name, color: color, icon: icon)
             try reload()
             return true
         } catch { self.error = error.localizedDescription; return false }
@@ -117,7 +117,7 @@ final class ProfilesModel: ObservableObject {
         Task {
             defer { exporting.remove(profile.id) }
             do {
-                try await LauncherBundle.export(profile, to: url)
+                try await LauncherBundle.export(profile, to: url, store: store)
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch { self.error = error.localizedDescription }
         }
@@ -276,7 +276,7 @@ struct ProfilesView: View {
                                 .frame(width: 32, height: 32)
                                 .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
                         }.buttonStyle(.borderless).foregroundStyle(.secondary)
-                            .help("Edit profile name and color").accessibilityLabel("Edit profile")
+                            .help("Edit profile name and icon").accessibilityLabel("Edit profile")
                     }
                     if profile.archived {
                         Text("Your data is still here. Restore this profile to open it again.").foregroundStyle(.secondary)
@@ -330,7 +330,7 @@ struct ProfilesView: View {
                     Divider().padding(.bottom, 4)
                     Text("Claude \(model.version) · \(AppMetadata.displayName) preview \(AppMetadata.displayVersion)")
                         .font(.system(size: 10, weight: .medium))
-                    Text("Use these launchers to reopen profiles. Profile Dock icons use your chosen color. Quit and reopen a profile after changing its name or color. Recheck your accounts after Claude updates.")
+                    Text("Use these launchers to reopen profiles. Profile Dock icons use your custom icon. Quit and reopen a profile after changing its name or icon, and recreate any saved launcher. Recheck your accounts after Claude updates.")
                         .font(.system(size: 11)).lineSpacing(3)
                 }.foregroundStyle(.secondary).padding(.top, 4)
             }.frame(maxWidth: 760).padding(28).frame(maxWidth: .infinity)
@@ -363,12 +363,41 @@ struct ProfileBadge: View {
     let profile: Profile
     let size: CGFloat
     var body: some View {
-        Text(String(profile.name.prefix(1)).uppercased())
-            .font(.system(size: size * 0.42, weight: .semibold, design: .rounded)).foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(Color(nsColor: ProfileArtwork.color(profile.color)).gradient, in: RoundedRectangle(cornerRadius: size * 0.28))
-            .overlay(RoundedRectangle(cornerRadius: size * 0.28).strokeBorder(.white.opacity(0.18)))
-            .accessibilityHidden(true)
+        let backgroundImage = ProfileArtwork.loadBackgroundImage(for: profile, store: ProfilesModel.shared.store)
+        if let image = ProfileArtwork.image(
+            text: profile.resolvedIconText,
+            position: profile.resolvedIconPosition,
+            color: profile.color,
+            backgroundImage: backgroundImage,
+            size: max(32, Int(size * 2))
+        ) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else {
+            RoundedRectangle(cornerRadius: size * 0.28)
+                .fill(Color(nsColor: ProfileArtwork.color(profile.color)).gradient)
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private extension IconTextPosition {
+    var accessibilityName: String {
+        switch self {
+        case .topLeft: return "Top left"
+        case .top: return "Top center"
+        case .topRight: return "Top right"
+        case .left: return "Middle left"
+        case .center: return "Center"
+        case .right: return "Middle right"
+        case .bottomLeft: return "Bottom left"
+        case .bottom: return "Bottom center"
+        case .bottomRight: return "Bottom right"
+        }
     }
 }
 
@@ -378,6 +407,12 @@ struct ProfileEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var color: ProfileColor = .blue
+    @State private var showText = true
+    @State private var customText = ""
+    @State private var textPosition: IconTextPosition = .center
+    @State private var existingBackgroundImage: NSImage?
+    @State private var pendingImageUpdate: IconImageUpdate = .keep
+    @State private var pendingPreviewImage: NSImage?
     @State private var error: String?
 
     init(model: ProfilesModel, profile: Profile?) {
@@ -385,28 +420,184 @@ struct ProfileEditor: View {
         self.profile = profile
         _name = State(initialValue: profile?.name ?? "")
         _color = State(initialValue: profile?.color ?? .blue)
+        _showText = State(initialValue: profile?.iconText != "")
+        _customText = State(initialValue: profile?.iconText ?? "")
+        _textPosition = State(initialValue: profile?.resolvedIconPosition ?? .center)
+        let loaded = profile.flatMap { ProfileArtwork.loadBackgroundImage(for: $0, store: model.store) }
+        _existingBackgroundImage = State(initialValue: loaded)
+    }
+
+    private var previewBackgroundImage: NSImage? {
+        switch pendingImageUpdate {
+        case .keep: return existingBackgroundImage
+        case .set: return pendingPreviewImage
+        case .remove: return nil
+        }
+    }
+
+    private var hasBackgroundImage: Bool {
+        switch pendingImageUpdate {
+        case .keep: return existingBackgroundImage != nil
+        case .set: return pendingPreviewImage != nil
+        case .remove: return false
+        }
+    }
+
+    private var previewText: String {
+        guard showText else { return "" }
+        let trimmed = customText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return String(trimmed.prefix(6)) }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(trimmedName.prefix(1)).uppercased()
+    }
+
+    private func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose icon background image"
+        panel.prompt = "Choose"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let pngData = try ProfileArtwork.normalizedBackgroundPNG(from: url)
+            guard let image = NSImage(data: pngData) else {
+                throw ProfileError.message("Could not read that image file. Choose a PNG, JPEG, or HEIC image.")
+            }
+            pendingImageUpdate = .set(pngData)
+            pendingPreviewImage = image
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             Label(profile == nil ? "New profile" : "Edit profile", systemImage: "person.crop.square")
                 .font(.system(size: 22, weight: .semibold))
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Name").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                TextField("Name", text: $name).textFieldStyle(.roundedBorder).controlSize(.large)
-                Picker("Color", selection: $color) { ForEach(ProfileColor.allCases, id: \.self) { Text($0.rawValue) } }
-                    .padding(.top, 8)
+
+            HStack(spacing: 16) {
+                if let preview = ProfileArtwork.image(
+                    text: previewText,
+                    position: textPosition,
+                    color: color,
+                    backgroundImage: previewBackgroundImage,
+                    size: 192
+                ) {
+                    Image(nsImage: preview)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 96, height: 96)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Name").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                    TextField("Name", text: $name).textFieldStyle(.roundedBorder).controlSize(.large)
+                }
             }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Background").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                Picker("Color", selection: $color) {
+                    ForEach(ProfileColor.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                HStack(spacing: 10) {
+                    Button("Choose Image…") { chooseImage() }
+                    if hasBackgroundImage {
+                        Button("Remove Image", role: .destructive) {
+                            pendingImageUpdate = .remove
+                            pendingPreviewImage = nil
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                Text("Transparent PNG logos show the selected color behind them.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Icon Label").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                Toggle("Show text on icon", isOn: $showText)
+                if showText {
+                    HStack(spacing: 8) {
+                        TextField("Auto (first letter)", text: $customText)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: customText) { _, newValue in
+                                if newValue.count > 6 {
+                                    customText = String(newValue.prefix(6))
+                                }
+                            }
+                        Text("\(customText.count)/6")
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28, alignment: .trailing)
+                    }
+                    HStack(alignment: .center, spacing: 12) {
+                        Text("Text position").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        IconPositionGrid(selection: $textPosition)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    if model.save(profile, name: name, color: color) { dismiss() }
+                    let trimmedCustom = customText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let iconText: String? = showText ? (trimmedCustom.isEmpty ? nil : trimmedCustom) : ""
+                    let iconUpdate = ProfileIconUpdate(
+                        text: iconText,
+                        position: textPosition,
+                        image: pendingImageUpdate
+                    )
+                    if model.save(profile, name: name, color: color, icon: iconUpdate) { dismiss() }
                     else { error = model.error; model.error = nil }
                 }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }.controlSize(.large)
-        }.padding(30).frame(width: 360)
+        }.padding(28).frame(width: 440)
+    }
+}
+
+private struct IconPositionGrid: View {
+    @Binding var selection: IconTextPosition
+    private let rows: [[IconTextPosition]] = [
+        [.topLeft, .top, .topRight],
+        [.left, .center, .right],
+        [.bottomLeft, .bottom, .bottomRight]
+    ]
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(0..<rows.count, id: \.self) { rowIndex in
+                HStack(spacing: 4) {
+                    ForEach(rows[rowIndex], id: \.self) { position in
+                        let selected = selection == position
+                        Button {
+                            selection = position
+                        } label: {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(selected ? Color.accentColor : Color.primary.opacity(0.08))
+                                .frame(width: 26, height: 20)
+                                .overlay {
+                                    Circle()
+                                        .fill(selected ? Color.white : Color.secondary.opacity(0.6))
+                                        .frame(width: 5, height: 5)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .help(position.accessibilityName)
+                        .accessibilityLabel(position.accessibilityName)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+            }
+        }
+        .padding(6)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
     }
 }

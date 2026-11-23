@@ -1,13 +1,36 @@
 import Foundation
 import Darwin
 
+enum IconTextPosition: String, Codable, CaseIterable {
+    case topLeft, top, topRight
+    case left, center, right
+    case bottomLeft, bottom, bottomRight
+}
+
+enum IconImageUpdate: Equatable {
+    case keep
+    case set(Data)
+    case remove
+}
+
+struct ProfileIconUpdate: Equatable {
+    var text: String?
+    var position: IconTextPosition
+    var image: IconImageUpdate
+}
+
 struct Profile: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
     var color: ProfileColor
     var archived = false
     var usesDefaultProfile: Bool? = nil
+    var iconText: String? = nil
+    var iconTextPosition: IconTextPosition? = nil
+    var iconImageToken: String? = nil
     var isMain: Bool { usesDefaultProfile == true }
+    var resolvedIconText: String { iconText ?? String(name.prefix(1)).uppercased() }
+    var resolvedIconPosition: IconTextPosition { iconTextPosition ?? .center }
 }
 
 struct Registry: Codable {
@@ -54,6 +77,16 @@ func checkedName(_ name: String) throws -> String {
     guard !value.isEmpty, value.count <= 60,
           !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
         throw ProfileError.message("Use a name between 1 and 60 characters, without control characters.")
+    }
+    return value
+}
+
+func checkedIconText(_ text: String?) throws -> String? {
+    guard let text else { return nil }
+    let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard value.count <= 6,
+          !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+        throw ProfileError.message("Use up to 6 characters for the icon label, without control characters.")
     }
     return value
 }
@@ -132,6 +165,17 @@ final class ProfileStore {
             guard try checkedName(p.name) == p.name else {
                 throw ProfileError.message("A stored profile has invalid details. The registry has been left untouched.")
             }
+            if let iconText = p.iconText {
+                guard try checkedIconText(iconText) == iconText else {
+                    throw ProfileError.message("A stored profile has invalid details. The registry has been left untouched.")
+                }
+            }
+            if let token = p.iconImageToken {
+                guard !token.isEmpty, token.count <= 64,
+                      !token.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                    throw ProfileError.message("A stored profile has invalid details. The registry has been left untouched.")
+                }
+            }
         }
         return registry
     }
@@ -165,15 +209,36 @@ final class ProfileStore {
         }
     }
 
+    private static let maxIconImageBytes = 10_485_760
+
+    func iconImageURL(_ id: UUID) -> URL {
+        root.appendingPathComponent("icons/\(id.uuidString).png")
+    }
+
+    func loadIconImageData(_ id: UUID) -> Data? {
+        let url = iconImageURL(id)
+        guard (try? rejectSymlink(url)) != nil,
+              fm.fileExists(atPath: url.path),
+              let attrs = try? fm.attributesOfItem(atPath: url.path),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              let size = (attrs[.size] as? NSNumber)?.intValue,
+              size > 0, size <= Self.maxIconImageBytes else {
+            return nil
+        }
+        return try? Data(contentsOf: url)
+    }
+
     @discardableResult
-    func save(id: UUID? = nil, name: String, color: ProfileColor) throws -> UUID {
+    func save(id: UUID? = nil, name: String, color: ProfileColor, icon: ProfileIconUpdate? = nil) throws -> UUID {
         let name = try checkedName(name)
+        let validatedIconText: String?? = try icon.map { try checkedIconText($0.text) }
         return try locked {
             var registry = try read()
             guard !registry.profiles.contains(where: {
                 !$0.archived && $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
             }) else { throw ProfileError.message("An active profile already uses that name.") }
             let result: UUID
+            let index: Int
             if let id {
                 guard let i = registry.profiles.firstIndex(where: { $0.id == id }) else {
                     throw ProfileError.message("This profile no longer exists. Reopen the manager.")
@@ -181,9 +246,35 @@ final class ProfileStore {
                 registry.profiles[i].name = name
                 registry.profiles[i].color = color
                 result = id
+                index = i
             } else {
                 result = UUID()
                 registry.profiles.append(Profile(id: result, name: name, color: color))
+                index = registry.profiles.count - 1
+            }
+            if let icon, let checkedText = validatedIconText {
+                registry.profiles[index].iconText = checkedText
+                registry.profiles[index].iconTextPosition = icon.position == .center ? nil : icon.position
+                let iconURL = iconImageURL(result)
+                switch icon.image {
+                case .keep:
+                    break
+                case .remove:
+                    try rejectSymlink(iconURL)
+                    if fm.fileExists(atPath: iconURL.path) {
+                        try fm.removeItem(at: iconURL)
+                    }
+                    registry.profiles[index].iconImageToken = nil
+                case .set(let data):
+                    guard !data.isEmpty, data.count <= Self.maxIconImageBytes else {
+                        throw ProfileError.message("Choose an image under 10 MB.")
+                    }
+                    try privateDirectory(iconURL.deletingLastPathComponent())
+                    try rejectSymlink(iconURL)
+                    try data.write(to: iconURL, options: .atomic)
+                    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: iconURL.path)
+                    registry.profiles[index].iconImageToken = UUID().uuidString
+                }
             }
             try write(registry)
             return result

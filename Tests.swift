@@ -1,9 +1,10 @@
 import Foundation
+import AppKit
 import Darwin
 
 @main
 struct Tests {
-    static func check(_ condition: Bool) { precondition(condition) }
+    static func check(_ condition: Bool, line: UInt = #line) { precondition(condition, "Check failed at line \(line)") }
     static func rejects(_ action: () throws -> Void) {
         do { try action(); fatalError("Expected rejection") } catch { }
     }
@@ -178,6 +179,154 @@ struct Tests {
             try await runLocalTool("/usr/bin/false", [])
             fatalError("Failed subprocess should be reported")
         } catch { check(error.localizedDescription.contains("exit 1")) }
+
+        // Icon customization tests
+        check(try checkedIconText(nil) == nil)
+        check(try checkedIconText("") == "")
+        check(try checkedIconText("   ") == "")
+        check(try checkedIconText("A") == "A")
+        check(try checkedIconText("  POLR99  ") == "POLR99")
+        rejects { _ = try checkedIconText("1234567") }
+        rejects { _ = try checkedIconText("a\nb") }
+
+        let legacyID = UUID()
+        let legacyJSON = """
+        {"version":2,"profiles":[{"id":"\(legacyID.uuidString)","name":"Alpha","color":"Blue","archived":false}]}
+        """
+        let decodedLegacy = try JSONDecoder().decode(Registry.self, from: Data(legacyJSON.utf8))
+        check(decodedLegacy.profiles.count == 1)
+        check(decodedLegacy.profiles[0].iconText == nil)
+        check(decodedLegacy.profiles[0].iconTextPosition == nil)
+        check(decodedLegacy.profiles[0].iconImageToken == nil)
+        check(decodedLegacy.profiles[0].resolvedIconText == "A")
+        check(decodedLegacy.profiles[0].resolvedIconPosition == .center)
+
+        func solidPNG(width: Int, height: Int, color: NSColor) -> Data {
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let ctx = NSGraphicsContext(bitmapImageRep: rep)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = ctx
+            color.setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            NSGraphicsContext.restoreGraphicsState()
+            return rep.representation(using: .png, properties: [:])!
+        }
+
+        let wideImageURL = root.appendingPathComponent("wide-logo.png")
+        try solidPNG(width: 2400, height: 1200, color: .systemRed).write(to: wideImageURL)
+        let normalizedData = try ProfileArtwork.normalizedBackgroundPNG(from: wideImageURL)
+        let normalizedRep = NSBitmapImageRep(data: normalizedData)!
+        check(normalizedRep.pixelsWide == 1024 && normalizedRep.pixelsHigh == 1024)
+
+        let customID = try store.save(
+            name: "Custom Icon",
+            color: .blue,
+            icon: ProfileIconUpdate(text: "POLR99", position: .topRight, image: .set(normalizedData))
+        )
+        let customProfile = try store.profile(customID)
+        check(customProfile.iconText == "POLR99")
+        check(customProfile.iconTextPosition == .topRight)
+        check(customProfile.resolvedIconText == "POLR99")
+        check(customProfile.resolvedIconPosition == .topRight)
+        check(customProfile.iconImageToken != nil)
+        check(store.loadIconImageData(customID) == normalizedData)
+
+        let savedToken = customProfile.iconImageToken
+        _ = try store.save(id: customID, name: "Custom Icon Updated", color: .purple)
+        let preserved = try store.profile(customID)
+        check(preserved.iconText == "POLR99")
+        check(preserved.iconTextPosition == .topRight)
+        check(preserved.iconImageToken == savedToken)
+
+        _ = try store.save(
+            id: customID,
+            name: "Custom Icon Updated",
+            color: .purple,
+            icon: ProfileIconUpdate(text: "", position: .center, image: .remove)
+        )
+        let cleared = try store.profile(customID)
+        check(cleared.iconText == "")
+        check(cleared.resolvedIconText == "")
+        check(cleared.iconTextPosition == nil)
+        check(cleared.iconImageToken == nil)
+        check(!fm.fileExists(atPath: store.iconImageURL(customID).path))
+        check(store.loadIconImageData(customID) == nil)
+
+        try fm.createSymbolicLink(at: store.iconImageURL(customID), withDestinationURL: iconTarget)
+        rejects {
+            _ = try store.save(
+                id: customID,
+                name: "Custom Icon Updated",
+                color: .purple,
+                icon: ProfileIconUpdate(text: nil, position: .center, image: .set(normalizedData))
+            )
+        }
+        rejects {
+            _ = try store.save(
+                id: customID,
+                name: "Custom Icon Updated",
+                color: .purple,
+                icon: ProfileIconUpdate(text: nil, position: .center, image: .remove)
+            )
+        }
+        check(store.loadIconImageData(customID) == nil)
+        check(try Data(contentsOf: iconTarget) == Data("untouched".utf8))
+        try fm.removeItem(at: store.iconImageURL(customID))
+
+        func whitePixelCounts(in pngData: Data) -> (upper: Int, lower: Int) {
+            let rep = NSBitmapImageRep(data: pngData)!
+            var upper = 0
+            var lower = 0
+            let midY = rep.pixelsHigh / 2
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    if c.alphaComponent > 0.85 && c.redComponent > 0.85 && c.greenComponent > 0.85 && c.blueComponent > 0.85 {
+                        if y < midY { upper += 1 } else { lower += 1 }
+                    }
+                }
+            }
+            return (upper, lower)
+        }
+
+        let topPNG = ProfileArtwork.png(text: "TOP", position: .top, color: .blue, size: 256)!
+        let topCounts = whitePixelCounts(in: topPNG)
+        check(topCounts.upper > 0 && topCounts.lower == 0)
+
+        let bottomPNG = ProfileArtwork.png(text: "BOT", position: .bottom, color: .blue, size: 256)!
+        let bottomCounts = whitePixelCounts(in: bottomPNG)
+        check(bottomCounts.lower > 0 && bottomCounts.upper == 0)
+
+        let emptyPNG = ProfileArtwork.png(text: "", position: .center, color: .blue, size: 256)!
+        let emptyCounts = whitePixelCounts(in: emptyPNG)
+        check(emptyCounts.upper == 0 && emptyCounts.lower == 0)
+
+        let wideTextPNG = ProfileArtwork.png(text: "WWWWWW", position: .bottomRight, color: .orange, size: 256)!
+        let wideCounts = whitePixelCounts(in: wideTextPNG)
+        check(wideCounts.lower > 0 && wideCounts.upper == 0)
+
+        let redBG = NSImage(data: solidPNG(width: 256, height: 256, color: .systemRed))!
+        let bgPNG = ProfileArtwork.png(text: "", position: .center, color: .blue, backgroundImage: redBG, size: 256)!
+        let bgRep = NSBitmapImageRep(data: bgPNG)!
+        let centerColor = bgRep.colorAt(x: 128, y: 128)!.usingColorSpace(.deviceRGB)!
+        check(centerColor.redComponent > 0.7 && centerColor.blueComponent < 0.3)
+
+        let exportCustomID = try store.save(
+            name: "Launcher Custom",
+            color: .green,
+            icon: ProfileIconUpdate(text: "POLR", position: .bottomLeft, image: .set(normalizedData))
+        )
+        let exportCustomProfile = try store.profile(exportCustomID)
+        let customLauncherURL = root.appendingPathComponent("POLR Switch Launcher Custom.app")
+        try await LauncherBundle.export(exportCustomProfile, to: customLauncherURL, store: store, executableURL: binaryURL, info: plist)
+        let icnsURL = customLauncherURL.appendingPathComponent("Contents/Resources/Profile.icns")
+        check(fm.fileExists(atPath: icnsURL.path))
+        let icnsAttrs = try fm.attributesOfItem(atPath: icnsURL.path)
+        check(((icnsAttrs[.size] as? NSNumber)?.intValue ?? 0) > 0)
+
+        print("PASS: custom icon text, 9-position placement, background images, normalization, symlink rejection, and launcher export")
         print("PASS: cross-process lifecycle exclusion, archive/open coordination, metadata inheritance, and async tool errors")
         print("PASS: registry integrity, stable IDs, names, archive/restore, exact launch matching, process parsing, locking, and symlink rejection")
     }

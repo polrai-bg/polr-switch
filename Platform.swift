@@ -129,7 +129,7 @@ enum ProfileArtwork {
         guard !profile.isMain else { return }
         let app = ClaudeLauncher.spec(profile, store: store).app
         try store.rejectSymlink(app.appendingPathComponent("Icon\r"))
-        guard let data = png(label: profile.name, color: profile.color, size: 512),
+        guard let data = png(profile: profile, store: store, size: 512),
               let image = NSImage(data: data) else {
             throw ProfileError.message("Could not render this profile's Dock icon.")
         }
@@ -148,26 +148,178 @@ enum ProfileArtwork {
         }
     }
 
-    static func png(label: String, color: ProfileColor, size: Int) -> Data? {
-        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+    static func normalizedBackgroundPNG(from url: URL) throws -> Data {
+        guard let source = NSImage(contentsOf: url),
+              source.size.width > 0, source.size.height > 0 else {
+            throw ProfileError.message("Could not read that image file. Choose a PNG, JPEG, or HEIC image.")
+        }
+        let maxRep = source.representations.max { $0.pixelsWide * $0.pixelsHigh < $1.pixelsWide * $1.pixelsHigh }
+        let srcW = (maxRep?.pixelsWide ?? 0) > 0 ? CGFloat(maxRep!.pixelsWide) : source.size.width
+        let srcH = (maxRep?.pixelsHigh ?? 0) > 0 ? CGFloat(maxRep!.pixelsHigh) : source.size.height
+        let side = min(1024, max(1, Int(min(srcW, srcH).rounded())))
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-            let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+            let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+            throw ProfileError.message("Could not read that image file. Choose a PNG, JPEG, or HEIC image.")
+        }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        let s = CGFloat(side)
+        let imgScale = max(s / source.size.width, s / source.size.height)
+        let drawW = source.size.width * imgScale
+        let drawH = source.size.height * imgScale
+        let drawRect = NSRect(x: (s - drawW) / 2, y: (s - drawH) / 2, width: drawW, height: drawH)
+        source.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            throw ProfileError.message("Could not read that image file. Choose a PNG, JPEG, or HEIC image.")
+        }
+        return pngData
+    }
+
+    static func loadBackgroundImage(for profile: Profile, store: ProfileStore) -> NSImage? {
+        guard profile.iconImageToken != nil, let data = store.loadIconImageData(profile.id) else {
+            return nil
+        }
+        return NSImage(data: data)
+    }
+
+    static func png(profile: Profile, store: ProfileStore, size: Int) -> Data? {
+        png(
+            text: profile.resolvedIconText,
+            position: profile.resolvedIconPosition,
+            color: profile.color,
+            backgroundImage: loadBackgroundImage(for: profile, store: store),
+            size: size
+        )
+    }
+
+    static func png(label: String, color: ProfileColor, size: Int) -> Data? {
+        png(
+            text: String(label.prefix(1)).uppercased(),
+            position: .center,
+            color: color,
+            backgroundImage: nil,
+            size: size
+        )
+    }
+
+    static func image(text: String, position: IconTextPosition = .center, color: ProfileColor,
+                      backgroundImage: NSImage? = nil, size: Int) -> NSImage? {
+        guard let data = png(text: text, position: position, color: color, backgroundImage: backgroundImage, size: size) else {
+            return nil
+        }
+        return NSImage(data: data)
+    }
+
+    static func png(text: String, position: IconTextPosition = .center, color: ProfileColor,
+                    backgroundImage: NSImage? = nil, size: Int) -> Data? {
+        guard size > 0,
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+
         let s = CGFloat(size)
+        let rect = NSRect(x: s * 0.08, y: s * 0.08, width: s * 0.84, height: s * 0.84)
+        let radius = s * 0.19
+        let clipPath = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+
+        NSGraphicsContext.saveGraphicsState()
+        clipPath.addClip()
         Self.color(color).setFill()
-        NSBezierPath(roundedRect: NSRect(x: s * 0.08, y: s * 0.08, width: s * 0.84, height: s * 0.84),
-                     xRadius: s * 0.19, yRadius: s * 0.19).fill()
-        let text = String(label.prefix(1)).uppercased() as NSString
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: s * 0.48, weight: .semibold),
-                                                   .foregroundColor: NSColor.white]
-        let measured = text.size(withAttributes: attrs)
-        text.draw(at: NSPoint(x: (s - measured.width) / 2, y: (s - measured.height) / 2), withAttributes: attrs)
+        clipPath.fill()
+
+        if let backgroundImage, backgroundImage.size.width > 0, backgroundImage.size.height > 0 {
+            let imgScale = max(rect.width / backgroundImage.size.width, rect.height / backgroundImage.size.height)
+            let drawW = backgroundImage.size.width * imgScale
+            let drawH = backgroundImage.size.height * imgScale
+            let drawRect = NSRect(x: rect.midX - drawW / 2, y: rect.midY - drawH / 2, width: drawW, height: drawH)
+            backgroundImage.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        let borderWidth = max(1, s * 0.01)
+        let borderPath = NSBezierPath(
+            roundedRect: rect.insetBy(dx: borderWidth / 2, dy: borderWidth / 2),
+            xRadius: max(0, radius - borderWidth / 2),
+            yRadius: max(0, radius - borderWidth / 2)
+        )
+        borderPath.lineWidth = borderWidth
+        NSColor.white.withAlphaComponent(0.18).setStroke()
+        borderPath.stroke()
+
+        if !text.isEmpty {
+            let baseRatio: CGFloat
+            switch text.count {
+            case 1: baseRatio = 0.48
+            case 2: baseRatio = 0.36
+            case 3: baseRatio = 0.28
+            case 4: baseRatio = 0.23
+            case 5: baseRatio = 0.19
+            default: baseRatio = 0.165
+            }
+            var fontSize = s * baseRatio
+            let usableRect = rect.insetBy(dx: rect.width * 0.09, dy: rect.height * 0.09)
+            let padX = backgroundImage != nil ? s * 0.045 : 0
+            let padY = backgroundImage != nil ? s * 0.025 : 0
+            let maxTextWidth = max(1, usableRect.width - padX * 2)
+            let maxTextHeight = max(1, usableRect.height - padY * 2)
+
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
+                .foregroundColor: NSColor.white
+            ]
+            var measured = (text as NSString).size(withAttributes: attrs)
+            if measured.width > maxTextWidth || measured.height > maxTextHeight {
+                let factor = min(maxTextWidth / max(1, measured.width), maxTextHeight / max(1, measured.height))
+                fontSize = max(1, fontSize * factor)
+                attrs[.font] = NSFont.systemFont(ofSize: fontSize, weight: .bold)
+                measured = (text as NSString).size(withAttributes: attrs)
+            }
+
+            let boxWidth = measured.width + padX * 2
+            let boxHeight = measured.height + padY * 2
+
+            let boxX: CGFloat
+            switch position {
+            case .topLeft, .left, .bottomLeft:
+                boxX = usableRect.minX
+            case .top, .center, .bottom:
+                boxX = usableRect.midX - boxWidth / 2
+            case .topRight, .right, .bottomRight:
+                boxX = usableRect.maxX - boxWidth
+            }
+
+            // AppKit NSBitmapImageRep uses a bottom-left origin (y = 0 at bottom, y = size at top).
+            let boxY: CGFloat
+            switch position {
+            case .topLeft, .top, .topRight:
+                boxY = usableRect.maxY - boxHeight
+            case .left, .center, .right:
+                boxY = usableRect.midY - boxHeight / 2
+            case .bottomLeft, .bottom, .bottomRight:
+                boxY = usableRect.minY
+            }
+
+            if backgroundImage != nil {
+                let boxRect = NSRect(x: boxX, y: boxY, width: boxWidth, height: boxHeight)
+                let pillRadius = min(boxHeight / 2, max(2, s * 0.045))
+                NSColor.black.withAlphaComponent(0.55).setFill()
+                NSBezierPath(roundedRect: boxRect, xRadius: pillRadius, yRadius: pillRadius).fill()
+            }
+
+            (text as NSString).draw(at: NSPoint(x: boxX + padX, y: boxY + padY), withAttributes: attrs)
+        }
+
         NSGraphicsContext.restoreGraphicsState()
         return bitmap.representation(using: .png, properties: [:])
     }
-
 }
 
 @MainActor
@@ -188,6 +340,7 @@ enum LauncherBundle {
     }
 
     static func export(_ profile: Profile, to destination: URL,
+                       store: ProfileStore = .standard,
                        executableURL: URL? = Bundle.main.executableURL,
                        info: [String: Any]? = Bundle.main.infoDictionary) async throws {
         let fm = FileManager.default
@@ -209,7 +362,7 @@ enum LauncherBundle {
         try fm.createDirectory(at: iconset, withIntermediateDirectories: true)
         for size in [16, 32, 128, 256, 512] {
             for scale in [1, 2] {
-                guard let png = ProfileArtwork.png(label: profile.name, color: profile.color, size: size * scale) else {
+                guard let png = ProfileArtwork.png(profile: profile, store: store, size: size * scale) else {
                     throw ProfileError.message("Could not create the profile icon.")
                 }
                 let suffix = scale == 2 ? "@2x" : ""
